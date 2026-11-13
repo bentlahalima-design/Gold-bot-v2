@@ -4,8 +4,8 @@ import pandas as pd
 import numpy as np
 import ta
 
-st.set_page_config(page_title="SMC Scalper V7", page_icon="⚡", layout="wide")
-st.title("⚡ SMC/ICT Gold Scalper - V7")
+st.set_page_config(page_title="SMC Scalper V8", page_icon="⚡", layout="wide")
+st.title("⚡ SMC/ICT Gold Scalper - V8 (Advanced)")
 st.markdown("---")
 
 # ==========================================
@@ -17,7 +17,6 @@ timeframe = st.sidebar.selectbox("الفريم (Timeframe)", ["5m", "15m"], inde
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🎯 إدارة المخاطر (بالنقط)")
-# فـ الدهب، النقطة = 0.1 دولار. 100 نقطة = 10 دولار
 pip_size = st.sidebar.number_input("قيمة النقطة (Pip Size)", value=0.1, step=0.01, format="%.2f")
 sl_pips = st.sidebar.number_input("الستوب لوز (نقطة)", value=100, step=10)
 tp1_pips = st.sidebar.number_input("الهدف 1 (نقطة)", value=100, step=10)
@@ -35,28 +34,34 @@ def get_data(symbol, period, interval):
     return data
 
 # ==========================================
-# 3. المؤشرات ومنطق SMC/ICT
+# 3. منطق SMC/ICT المتقدم
 # ==========================================
 def calculate_smc_logic(df):
-    # المؤشرات الأساسية
+    # مؤشرات الترند
     df['EMA50'] = ta.trend.ema_indicator(df['Close'], window=50)
     df['EMA200'] = ta.trend.ema_indicator(df['Close'], window=200)
     df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
     
-    # كشف FVG (Fair Value Gap)
-    # الفجوة الصاعدة: قاع الشمعة الحالية أعلى من قمة الشمعة اللي قبل جوج
-    df['FVG_Bull'] = df['Low'] > df['High'].shift(2)
-    # الفجوة الهابطة: قمة الشمعة الحالية أقل من قاع الشمعة اللي قبل جوج
-    df['FVG_Bear'] = df['High'] < df['Low'].shift(2)
+    # كشف القمم والقيعان (Liquidity)
+    df['Swing_High'] = df['High'].rolling(window=10).max()
+    df['Swing_Low'] = df['Low'].rolling(window=10).min()
     
-    # تقريب Order Block / Supply & Demand (شمعة قوية عكس الاتجاه قبل الحركة)
+    # كشف FVG مع شمعة قوية (Displacement)
+    body_size = abs(df['Close'] - df['Open'])
+    avg_body = body_size.rolling(10).mean()
+    strong_candle = body_size > avg_body * 1.5
+    
+    df['FVG_Bull'] = (df['Low'] > df['High'].shift(2)) & strong_candle
+    df['FVG_Bear'] = (df['High'] < df['Low'].shift(2)) & strong_candle
+    
+    # Order Block بسيط (Engulfing)
     df['Bull_OB'] = (df['Close'].shift(1) < df['Open'].shift(1)) & (df['Close'] > df['Open']) & (df['Close'] > df['High'].shift(1))
     df['Bear_OB'] = (df['Close'].shift(1) > df['Open'].shift(1)) & (df['Close'] < df['Open']) & (df['Close'] < df['Low'].shift(1))
     
     return df
 
 # ==========================================
-# 4. محرك الاختبار التاريخي (Backtest)
+# 4. محرك الاختبار التاريخي (دقيق)
 # ==========================================
 def run_backtest(df, sl_dist, tp1_dist, tp2_dist, tp3_dist):
     wins = 0
@@ -65,52 +70,54 @@ def run_backtest(df, sl_dist, tp1_dist, tp2_dist, tp3_dist):
     gross_loss = 0
     total_trades = 0
     
+    in_trade = False # باش نمنعو الدخول المتعدد
+    trade_type = None
+    
     for i in range(200, len(df) - 20):
         row = df.iloc[i]
         
-        # شرط الشراء (SMC Confluence)
-        buy_signal = (row['Close'] > row['EMA200']) and (row['EMA50'] > row['EMA200']) and (row['RSI'] > 50) and (row['FVG_Bull'] or row['Bull_OB'])
-        
-        # شرط البيع
-        sell_signal = (row['Close'] < row['EMA200']) and (row['EMA50'] < row['EMA200']) and (row['RSI'] < 50) and (row['FVG_Bear'] or row['Bear_OB'])
-        
-        if buy_signal:
-            total_trades += 1
-            entry = row['Close']
-            sl = entry - sl_dist
-            tp1 = entry + tp1_dist
-            tp2 = entry + tp2_dist
-            tp3 = entry + tp3_dist
+        if not in_trade:
+            # شرط الشراء: ترند صاعد + (FVG أو OB) + كسر سيولة
+            buy_cond = (row['Close'] > row['EMA200']) and (row['RSI'] > 50) and (row['FVG_Bull'] or row['Bull_OB']) and (row['Close'] > row['Swing_High'].shift(1))
             
-            # كنقلبو على النتيجة فـ 15 شمعة القادمة
-            for j in range(i+1, min(i+15, len(df))):
-                if df['Low'].iloc[j] <= sl:
+            # شرط البيع: ترند هابط + (FVG أو OB) + كسر سيولة
+            sell_cond = (row['Close'] < row['EMA200']) and (row['RSI'] < 50) and (row['FVG_Bear'] or row['Bear_OB']) and (row['Close'] < row['Swing_Low'].shift(1))
+            
+            if buy_cond:
+                in_trade = True
+                trade_type = "BUY"
+                entry = row['Close']
+                sl = entry - sl_dist
+                tp1 = entry + tp1_dist
+            elif sell_cond:
+                in_trade = True
+                trade_type = "SELL"
+                entry = row['Close']
+                sl = entry + sl_dist
+                tp1 = entry - tp1_dist
+                
+        else:
+            # إلا كنا فصفقة، كنقلبو واش ضربت الستوب ولا الهدف
+            if trade_type == "BUY":
+                if row['Low'] <= sl:
                     losses += 1
                     gross_loss += sl_dist
-                    break
-                elif df['High'].iloc[j] >= tp1: # كنحسبو النجاح ملي كيوصل TP1
+                    in_trade = False
+                elif row['High'] >= tp1:
                     wins += 1
                     gross_profit += tp1_dist
-                    break
-                    
-        elif sell_signal:
-            total_trades += 1
-            entry = row['Close']
-            sl = entry + sl_dist
-            tp1 = entry - tp1_dist
-            tp2 = entry - tp2_dist
-            tp3 = entry - tp3_dist
-            
-            for j in range(i+1, min(i+15, len(df))):
-                if df['High'].iloc[j] >= sl:
+                    in_trade = False
+            elif trade_type == "SELL":
+                if row['High'] >= sl:
                     losses += 1
                     gross_loss += sl_dist
-                    break
-                elif df['Low'].iloc[j] <= tp1:
+                    in_trade = False
+                elif row['Low'] <= tp1:
                     wins += 1
                     gross_profit += tp1_dist
-                    break
-                    
+                    in_trade = False
+
+    total_trades = wins + losses
     win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
     profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 0
     return wins, losses, total_trades, win_rate, profit_factor
@@ -121,7 +128,7 @@ def run_backtest(df, sl_dist, tp1_dist, tp2_dist, tp3_dist):
 if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=True):
     with st.spinner('جاري تحليل السيولة والهيكل...'):
         try:
-            df = get_data(symbol, "30d", timeframe)
+            df = get_data(symbol, "60d", timeframe)
             df = calculate_smc_logic(df)
             
             last_row = df.iloc[-1]
@@ -132,31 +139,25 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
             tp2_dist = tp2_pips * pip_size
             tp3_dist = tp3_pips * pip_size
             
-            # شروط الإشارة الحالية
-            current_buy = (last_row['Close'] > last_row['EMA200']) and (last_row['EMA50'] > last_row['EMA200']) and (last_row['RSI'] > 50) and (last_row['FVG_Bull'] or last_row['Bull_OB'])
-            current_sell = (last_row['Close'] < last_row['EMA200']) and (last_row['EMA50'] < last_row['EMA200']) and (last_row['RSI'] < 50) and (last_row['FVG_Bear'] or last_row['Bear_OB'])
+            # الشروط ديال آخر شمعة
+            current_buy = (last_row['Close'] > last_row['EMA200']) and (last_row['RSI'] > 50) and (last_row['FVG_Bull'] or last_row['Bull_OB']) and (last_row['Close'] > last_row['Swing_High'].shift(1))
+            current_sell = (last_row['Close'] < last_row['EMA200']) and (last_row['RSI'] < 50) and (last_row['FVG_Bear'] or last_row['Bear_OB']) and (last_row['Close'] < last_row['Swing_Low'].shift(1))
             
             signal = "WAITING"
             color = "gray"
             
             if current_buy:
                 signal, color = "BUY", "#00FF00"
-                sl = last_close - sl_dist
-                tp1 = last_close + tp1_dist
-                tp2 = last_close + tp2_dist
-                tp3 = last_close + tp3_dist
+                sl, tp1, tp2, tp3 = last_close - sl_dist, last_close + tp1_dist, last_close + tp2_dist, last_close + tp3_dist
             elif current_sell:
                 signal, color = "SELL", "#FF0000"
-                sl = last_close + sl_dist
-                tp1 = last_close - tp1_dist
-                tp2 = last_close - tp2_dist
-                tp3 = last_close - tp3_dist
+                sl, tp1, tp2, tp3 = last_close + sl_dist, last_close - tp1_dist, last_close - tp2_dist, last_close - tp3_dist
 
             col1, col2, col3 = st.columns([1, 2, 1])
             with col2:
                 if signal != "WAITING":
                     st.markdown(f"<h1 style='text-align: center; color: {color}; font-size: 60px;'>{signal}</h1>", unsafe_allow_html=True)
-                    st.markdown(f"<h3 style='text-align: center;'>إشارة SMC/ICT مؤكدة ✅</h3>", unsafe_allow_html=True)
+                    st.markdown(f"<h3 style='text-align: center;'>إشارة SMC/ICT (سيولة + فجوة) ✅</h3>", unsafe_allow_html=True)
                     
                     col_e, col_sl = st.columns(2)
                     col_e.metric("الدخول (Entry)", f"{last_close:.2f}")
@@ -168,11 +169,11 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
                     col_tp2.metric(f"الهدف 2 ({tp2_pips} نقطة)", f"{tp2:.2f}")
                     col_tp3.metric(f"الهدف 3 ({tp3_pips} نقطة)", f"{tp3:.2f}")
                 else:
-                    st.warning("⚠️ السوق غير واضح حالياً. البوت كينتظر تكون فجوة سعرية (FVG) ولا Order Block مع تأكيد الترند. ماتدخلش دابا.")
+                    st.warning("⚠️ السوق غير واضح حالياً. البوت كينتظر: كسر سيولة + فجوة سعرية قوية (FVG) + تأكيد الاتجاه. ماتدخلش دابا.")
 
             # النتائج
             st.markdown("---")
-            st.subheader("📊 نتائج الاختبار التاريخي (SMC Backtest)")
+            st.subheader("📊 نتائج الاختبار التاريخي (SMC Backtest V8)")
             wins, losses, total, win_rate, pf = run_backtest(df, sl_dist, tp1_dist, tp2_dist, tp3_dist)
             
             if total > 0:
@@ -181,11 +182,9 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
                 c2.metric("ناجحة (وصلت TP1)", wins)
                 c3.metric("خاسرة (ضربت SL)", losses)
                 
-                # لون النسبة
-                wr_color = "green" if win_rate > 50 else "red"
                 c4.metric("نسبة النجاح", f"{win_rate:.1f}%")
                 
-                st.info(f"💡 **معامل الربح (Profit Factor):** {pf:.2f} | هاد البوت كيعتمد على السكالبينغ عكس الاتجاه ولا مع الاتجاه، تأكد من رسم الشارت بعينك قبل الدخول.")
+                st.info(f"💡 **معامل الربح (Profit Factor):** {pf:.2f} | الهدف ديالنا هو فوق 1.5 مع تقليل عدد الصفقات باش نتفاداو التخربيق.")
             else:
                 st.error("ماكاينش إشارات فالفترة الماضية، جرب تبدل الفريم ولا العملة.")
                 
