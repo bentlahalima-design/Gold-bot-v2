@@ -5,7 +5,7 @@ import numpy as np
 import ta
 from datetime import datetime, timezone, timedelta
 
-st.set_page_config(page_title="AI Signal Pro - BTC & Gold", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="MTF Sniper V22", page_icon="🎯", layout="wide")
 
 # ==========================================
 # 1. CSS باش نعطيو شكل التطبيق
@@ -25,6 +25,7 @@ st.markdown("""
     .big-signal { font-size: 60px; font-weight: bold; text-align: center; margin: 10px 0; }
     .buy-color { color: #00ff88; }
     .sell-color { color: #ff3366; }
+    .wait-color { color: #f1c40f; }
     .box-item {
         background-color: #232634;
         padding: 15px;
@@ -45,7 +46,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("<h2 style='text-align: center; color: white;'>🎯 AI Signal Dashboard</h2>", unsafe_allow_html=True)
+st.markdown("<h2 style='text-align: center; color: white;'>🎯 MTF Sniper (15M + 5M)</h2>", unsafe_allow_html=True)
 st.markdown("---")
 
 # ==========================================
@@ -67,8 +68,6 @@ else:
     default_tp1 = 50
     default_tp2 = 100
     default_tp3 = 150
-
-timeframe = st.sidebar.selectbox("الفريم الزمني", ["15m", "1h", "5m"], index=0)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🎯 إدارة المخاطر (بالنقط)")
@@ -92,77 +91,97 @@ def get_data(symbol, period, interval):
         data.index = data.index.tz_convert('UTC')
     return data.dropna()
 
-def analyze_market(df):
-    df['EMA50'] = ta.trend.ema_indicator(df['Close'], window=50)
-    df['EMA200'] = ta.trend.ema_indicator(df['Close'], window=200)
-    df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
-    df['ATR'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
-    
-    last = df.iloc[-1]
-    
-    trend = "Strong Uptrend" if last['Close'] > last['EMA200'] and last['EMA50'] > last['EMA200'] else "Strong Downtrend"
-    momentum = "Bullish" if last['RSI'] > 50 else "Bearish"
-    volatility = "High" if last['ATR'] > df['ATR'].mean() else "Low"
-    
-    df['Sweep_Low'] = (df['Low'] < df['Low'].rolling(10).min().shift(1)) & (df['Close'] > df['Low'].rolling(10).min().shift(1))
-    df['Sweep_High'] = (df['High'] > df['High'].rolling(10).max().shift(1)) & (df['Close'] < df['High'].rolling(10).max().shift(1))
-    df['FVG_Bull'] = df['Low'] > df['High'].shift(2)
-    df['FVG_Bear'] = df['High'] < df['Low'].shift(2)
-    
-    last = df.iloc[-1]
-    
-    if last['Sweep_Low'] and (last['FVG_Bull'] or momentum == "Bullish"):
-        signal = "BUY"
-        confidence = 85
-    elif last['Sweep_High'] and (last['FVG_Bear'] or momentum == "Bearish"):
-        signal = "SELL"
-        confidence = 85
-    elif last['Close'] > last['EMA200']:
-        signal = "BUY"
-        confidence = 65
-    else:
-        signal = "SELL"
-        confidence = 65
-        
-    return signal, confidence, trend, momentum, volatility, last['Close'], last['RSI']
-
 # ==========================================
 # 4. الواجهة الرئيسية
 # ==========================================
 if st.button(f"🚀 تحليل {asset_choice} الآن", use_container_width=True):
-    with st.spinner(f'جاري تحليل {asset_choice}...'):
+    with st.spinner(f'جاري تحليل الفريمات...'):
         try:
-            df = get_data(symbol, "60d", timeframe)
-            signal, confidence, trend, momentum, volatility, entry, rsi = analyze_market(df)
+            # --- 1. تحليل الفريم الكبير (15M) ---
+            df_15m = get_data(symbol, "30d", "15m")
+            df_15m['EMA200'] = ta.trend.ema_indicator(df_15m['Close'], window=200)
+            last_15m = df_15m.iloc[-1]
             
-            sig_color = "buy-color" if signal == "BUY" else "sell-color"
-            
-            if signal == "BUY":
-                sl = entry - (sl_pips * pip_size)
-                tp1, tp2, tp3 = entry + (tp1_pips * pip_size), entry + (tp2_pips * pip_size), entry + (tp3_pips * pip_size)
+            # تحديد الاتجاه العام
+            if last_15m['Close'] > last_15m['EMA200']:
+                trend_15m = "UP"
+                trend_text = "Strong Uptrend (15m)"
+                trend_color = "#00ff88"
             else:
-                sl = entry + (sl_pips * pip_size)
-                tp1, tp2, tp3 = entry - (tp1_pips * pip_size), entry - (tp2_pips * pip_size), entry - (tp3_pips * pip_size)
+                trend_15m = "DOWN"
+                trend_text = "Strong Downtrend (15m)"
+                trend_color = "#ff3366"
 
+            # --- 2. تحليل فريم الدخول (5M) ---
+            df_5m = get_data(symbol, "10d", "5m")
+            df_5m['RSI'] = ta.momentum.rsi(df_5m['Close'], window=14)
+            
+            # كشف السيولة (Sweep) و FVG
+            df_5m['Sweep_Low'] = (df_5m['Low'] < df_5m['Low'].rolling(10).min().shift(1)) & (df_5m['Close'] > df_5m['Low'].rolling(10).min().shift(1))
+            df_5m['Sweep_High'] = (df_5m['High'] > df_5m['High'].rolling(10).max().shift(1)) & (df_5m['Close'] < df_5m['High'].rolling(10).max().shift(1))
+            df_5m['FVG_Bull'] = df_5m['Low'] > df_5m['High'].shift(2)
+            df_5m['FVG_Bear'] = df_5m['High'] < df_5m['Low'].shift(2)
+            
+            last_5m = df_5m.iloc[-1]
+            entry = last_5m['Close']
+
+            # --- 3. منطق القناص (Top-Down) ---
+            signal = "WAITING"
+            confidence = 0
+            sig_color = "wait-color"
+            
+            # إلا كان ترند 15m صاعد، كنقلبو غير على شراء فـ 5m
+            if trend_15m == "UP":
+                if last_5m['Sweep_Low'] and (last_5m['FVG_Bull'] or last_5m['RSI'] > 45):
+                    signal = "BUY"
+                    confidence = 90
+                    sig_color = "buy-color"
+                elif last_5m['Close'] > last_5m['Open']: # إشارة استمرارية الترند
+                    signal = "BUY"
+                    confidence = 65
+                    sig_color = "buy-color"
+                    
+            # إلا كان ترند 15m هابط، كنقلبو غير على بيع فـ 5m
+            elif trend_15m == "DOWN":
+                if last_5m['Sweep_High'] and (last_5m['FVG_Bear'] or last_5m['RSI'] < 55):
+                    signal = "SELL"
+                    confidence = 90
+                    sig_color = "sell-color"
+                elif last_5m['Close'] < last_5m['Open']: # إشارة استمرارية الترند
+                    signal = "SELL"
+                    confidence = 65
+                    sig_color = "sell-color"
+
+            # الوقت الحالي
             tz_ma = timezone(timedelta(hours=1))
             current_time = datetime.now(tz_ma).strftime("%H:%M")
 
+            # حساب الستوب والأهداف
+            if signal == "BUY":
+                sl = entry - (sl_pips * pip_size)
+                tp1, tp2, tp3 = entry + (tp1_pips * pip_size), entry + (tp2_pips * pip_size), entry + (tp3_pips * pip_size)
+            elif signal == "SELL":
+                sl = entry + (sl_pips * pip_size)
+                tp1, tp2, tp3 = entry - (tp1_pips * pip_size), entry - (tp2_pips * pip_size), entry - (tp3_pips * pip_size)
+            else:
+                sl, tp1, tp2, tp3 = 0, 0, 0, 0
+
             # ==========================================
-            # عرض الكارت (بدون مسافات باش يخدم HTML)
+            # عرض الكارت (بلا مسافات)
             # ==========================================
             html_content = f"""
 <div class="signal-card">
 <div style="display: flex; justify-content: space-between; align-items: center;">
-<span class="title-text">🎯 AI Signal - {asset_choice}</span>
+<span class="title-text">🎯 AI MTF Signal - {asset_choice}</span>
 <span style="color: #2ecc71; font-size: 14px;">● LIVE</span>
 </div>
 <div class="big-signal {sig_color}">
 {signal}
 </div>
 <div style="background-color: #2d303e; border-radius: 10px; height: 10px; margin-bottom: 20px;">
-<div style="background-color: {'#00ff88' if signal == 'BUY' else '#ff3366'}; width: {confidence}%; height: 10px; border-radius: 10px;"></div>
+<div style="background-color: {'#00ff88' if signal == 'BUY' else '#ff3366' if signal == 'SELL' else '#f1c40f'}; width: {confidence}%; height: 10px; border-radius: 10px;"></div>
 </div>
-<div style="text-align: right; color: { '#00ff88' if signal == 'BUY' else '#ff3366' }; font-weight: bold; margin-bottom: 20px;">
+<div style="text-align: right; color: { '#00ff88' if signal == 'BUY' else '#ff3366' if signal == 'SELL' else '#f1c40f' }; font-weight: bold; margin-bottom: 20px;">
 {confidence}% Confidence
 </div>
 <div class="box-item entry-box">
@@ -186,16 +205,15 @@ if st.button(f"🚀 تحليل {asset_choice} الآن", use_container_width=Tru
 <span class="text-green">${tp3:.2f}</span>
 </div>
 <div style="display: flex; justify-content: space-between; margin-top: 20px; color: #a0a5b1; font-size: 14px;">
-<div>Trend: <span style="color: {'#00ff88' if 'Up' in trend else '#ff3366'};">{trend}</span></div>
-<div>Volatility: <span style="color: white;">{volatility}</span></div>
+<div>15M Trend: <span style="color: {trend_color};">{trend_text}</span></div>
 </div>
 <div style="display: flex; justify-content: space-between; margin-top: 10px; color: #a0a5b1; font-size: 14px;">
-<div>Momentum: <span style="color: white;">{momentum}</span></div>
-<div>RSI: <span style="color: white;">{rsi:.1f}</span></div>
+<div>5M Setup: <span style="color: white;">{'Sweep + FVG' if confidence == 90 else 'Trend Continuation' if confidence == 65 else 'No Setup'}</span></div>
+<div>RSI (5m): <span style="color: white;">{last_5m['RSI']:.1f}</span></div>
 </div>
 <div style="margin-top: 20px; text-align: center; color: #555; font-size: 12px;">
-Last signal: {signal} at {current_time} (under 1 min ago)<br>
-Mode: Quality (target 5/day)
+Last signal: {signal} at {current_time}<br>
+Mode: MTF Sniper (15M Direction + 5M Entry)
 </div>
 </div>
 """
