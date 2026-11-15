@@ -4,8 +4,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timezone, timedelta
 
-st.set_page_config(page_title="V16 - High Frequency VIP", page_icon="🔥", layout="wide")
-st.title("🔥 V16 - High Frequency VIP (Scalp & Swing)")
+st.set_page_config(page_title="V17 - High Win Rate SMC", page_icon="🛡️", layout="wide")
+st.title("🛡️ V17 - High Win Rate SMC (VIP Edition)")
 st.markdown("---")
 
 # ==========================================
@@ -19,18 +19,9 @@ st.sidebar.subheader("⏰ الجلسات (Killzones)")
 sessions = st.sidebar.multiselect("اختار الجلسات:", ["London", "New York"], default=["London", "New York"])
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("🎯 إدارة المخاطر")
-trade_type_mode = st.sidebar.radio("نوع الصفقة:", ["Scalp (50 SL / 100 TP)", "Swing (100 SL / 300 TP)"])
-
-if "Scalp" in trade_type_mode:
-    sl_pips = 50
-    tp1_pips = 100
-else:
-    sl_pips = 100
-    tp1_pips = 300
-
-st.sidebar.info(f"الستوب: {sl_pips} نقطة | الهدف: {tp1_pips} نقطة")
-pip_size = 0.1
+pip_size = st.sidebar.number_input("حجم النقطة", value=0.1, step=0.1, format="%.1f")
+sl_pips = st.sidebar.number_input("الستوب لوز (نقطة)", value=50, step=10)
+tp1_pips = st.sidebar.number_input("الهدف (نقطة)", value=100, step=10)
 
 # ==========================================
 # 2. جلب الداتا
@@ -55,7 +46,7 @@ def is_in_session(timestamp, selected_sessions):
     return False
 
 # ==========================================
-# 3. المؤشرات (معدلة باش تعطي إشارات كثر)
+# 3. المؤشرات (Range Filter, AlgoAlpha, Sonarlab, RSI, Sweep)
 # ==========================================
 def calculate_range_filter_trend(df, rng_per=20, rng_qty=3.5):
     source = df['Close']
@@ -77,7 +68,7 @@ def calculate_range_filter_trend(df, rng_per=20, rng_qty=3.5):
         else: fdir[i] = fdir[i-1]
     return fdir 
 
-def calculate_algo_alpha_zones(df, plen=100, res=40, tolerance=0.93): # صغرنا plen لـ 100 باش يعطي مناطق كثر
+def calculate_algo_alpha_zones(df, plen=100, res=40, tolerance=0.93):
     recent_df = df.tail(plen)
     if len(recent_df) < plen: return []
     max_p = recent_df['High'].max()
@@ -100,7 +91,7 @@ def calculate_algo_alpha_zones(df, plen=100, res=40, tolerance=0.93): # صغرن
             key_zones.append((min_p + (j * step), min_p + ((j + 1) * step)))
     return key_zones
 
-def calculate_sonarlab_obs(df, sens=20): # صغرنا sens لـ 20 باش يعطي OB كثر
+def calculate_sonarlab_obs(df, sens=20):
     df = df.copy()
     sens = sens / 100
     df['pc'] = (df['Open'] - df['Open'].shift(4)) / df['Open'].shift(4) * 100
@@ -133,21 +124,37 @@ def calculate_sonarlab_obs(df, sens=20): # صغرنا sens لـ 20 باش يعط
     df['In_Bear_OB'] = in_bear_ob
     return df
 
+def calculate_sweep_rsi(df):
+    # RSI
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
+    
+    # Sweep (السيولة على 5 شموع)
+    df['Prev_Low_5'] = df['Low'].rolling(window=5).min().shift(1)
+    df['Prev_High_5'] = df['High'].rolling(window=5).max().shift(1)
+    df['Sweep_Low'] = (df['Low'] < df['Prev_Low_5']) & (df['Close'] > df['Prev_Low_5'])
+    df['Sweep_High'] = (df['High'] > df['Prev_High_5']) & (df['Close'] < df['Prev_High_5'])
+    return df
+
 # ==========================================
 # 4. الواجهة الرئيسية
 # ==========================================
 if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=True):
-    with st.spinner('جاري البحث عن إشارات (High Frequency)...'):
+    with st.spinner('جاري القنص (High Win Rate)...'):
         try:
             df_1h = get_data(symbol, "60d", "1h")
             trend_1h_series = calculate_range_filter_trend(df_1h)
             current_trend_1h = trend_1h_series[-1]
             
             df = get_data(symbol, "60d", timeframe)
+            df = calculate_sweep_rsi(df)
             df = calculate_sonarlab_obs(df)
             
             st.markdown("---")
-            st.subheader(f"📊 نتائج الاختبار - ({timeframe}) - {trade_type_mode}")
+            st.subheader(f"📊 نتائج الاختبار (High Win Rate) - ({timeframe})")
             
             wins, losses, total_trades = 0, 0, 0
             net_pips = 0
@@ -171,15 +178,15 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
                 trend_bt = 1 if row['Close'] > ema200.iloc[i] else -1
                 time_ok = is_in_session(row.name, sessions)
                 
-                if not in_trade and time_ok and trades_today < 5: # رفعنا السقف لـ 5 صفقات
+                if not in_trade and time_ok and trades_today < 3: # Max 3 trades
                     in_z = False
                     if bt_zones:
                         for z_b, z_t in bt_zones:
                             if z_b <= row['Close'] <= z_t: in_z = True; break
                     
-                    # شروط مبسطة: ترند + (منطقة ولا OB) بلا سيولة
-                    b_cond = (trend_bt == 1) and (in_z or row['In_Bull_OB'])
-                    s_cond = (trend_bt == -1) and (in_z or row['In_Bear_OB'])
+                    # شروط قوية (Sweep + OB/Zone + RSI + Trend)
+                    b_cond = (trend_bt == 1) and (in_z or row['In_Bull_OB']) and row['Sweep_Low'] and (row['RSI'] > 45)
+                    s_cond = (trend_bt == -1) and (in_z or row['In_Bear_OB']) and row['Sweep_High'] and (row['RSI'] < 55)
                     
                     if b_cond:
                         in_trade = True; trade_type = "BUY"
@@ -237,8 +244,8 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
                         if entry_price > ema200.iloc[-1]: in_demand = True
                         else: in_supply = True
                         
-            live_buy = (current_trend_1h == 1) and (in_demand or last['In_Bull_OB']) and in_time
-            live_sell = (current_trend_1h == -1) and (in_supply or last['In_Bear_OB']) and in_time
+            live_buy = (current_trend_1h == 1) and (in_demand or last['In_Bull_OB']) and last['Sweep_Low'] and (last['RSI'] > 45) and in_time
+            live_sell = (current_trend_1h == -1) and (in_supply or last['In_Bear_OB']) and last['Sweep_High'] and (last['RSI'] < 55) and in_time
 
             if live_buy or live_sell:
                 signal, color = ("BUY", "#00FF00") if live_buy else ("SELL", "#FF0000")
@@ -251,7 +258,7 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
                 c2.metric("الستوب", f"{sl:.2f}")
                 c3.metric("الهدف", f"{tp1:.2f}")
             else:
-                st.warning(f"⚠️ السوق غير واضح حالياً. جرب تبدل الفريم ولا الجلسة.")
+                st.warning(f"⚠️ السوق غير واضح حالياً. البوت ينتظر ضربة سيولة + OB/FVG + تأكيد الاتجاه.")
 
         except Exception as e:
             st.error(f"وقع خطأ: {e}")
