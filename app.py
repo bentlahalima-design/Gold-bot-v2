@@ -4,28 +4,33 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timezone, timedelta
 
-st.set_page_config(page_title="V14 - ICT Sweep Sniper", page_icon="🎯", layout="wide")
-st.title("🎯 V14 - ICT Sweep Sniper (Strict 3 Trades/Day)")
+st.set_page_config(page_title="V16 - High Frequency VIP", page_icon="🔥", layout="wide")
+st.title("🔥 V16 - High Frequency VIP (Scalp & Swing)")
 st.markdown("---")
 
 # ==========================================
-# 1. الإعدادات (ماتبدلهمش)
+# 1. الإعدادات
 # ==========================================
 symbol = st.sidebar.text_input("رمز العملة", "GC=F")
-timeframe = st.sidebar.selectbox("فريم الدخول", ["15m", "5m"], index=0)
+timeframe = st.sidebar.selectbox("فريم الدخول", ["15m", "5m", "1h"], index=0)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("⏰ الجلسات (Killzones)")
-sessions = st.sidebar.multiselect(
-    "اختار الجلسات:",
-    ["Asia/Tokyo", "London", "New York"],
-    default=["London", "New York"]
-)
+sessions = st.sidebar.multiselect("اختار الجلسات:", ["London", "New York"], default=["London", "New York"])
 
 st.sidebar.markdown("---")
-pip_size = st.sidebar.number_input("حجم النقطة", value=0.1, step=0.1, format="%.1f")
-sl_pips = st.sidebar.number_input("الستوب لوز (نقطة)", value=50, step=10)
-tp1_pips = st.sidebar.number_input("الهدف (نقطة)", value=100, step=10)
+st.sidebar.subheader("🎯 إدارة المخاطر")
+trade_type_mode = st.sidebar.radio("نوع الصفقة:", ["Scalp (50 SL / 100 TP)", "Swing (100 SL / 300 TP)"])
+
+if "Scalp" in trade_type_mode:
+    sl_pips = 50
+    tp1_pips = 100
+else:
+    sl_pips = 100
+    tp1_pips = 300
+
+st.sidebar.info(f"الستوب: {sl_pips} نقطة | الهدف: {tp1_pips} نقطة")
+pip_size = 0.1
 
 # ==========================================
 # 2. جلب الداتا
@@ -43,55 +48,119 @@ def get_data(symbol, period, interval):
 
 def is_in_session(timestamp, selected_sessions):
     hour = timestamp.hour
-    in_asia = (0 <= hour < 9)
     in_london = (7 <= hour < 16)
     in_ny = (12 <= hour < 21)
-    if "Asia/Tokyo" in selected_sessions and in_asia: return True
     if "London" in selected_sessions and in_london: return True
     if "New York" in selected_sessions and in_ny: return True
     return False
 
 # ==========================================
-# 3. منطق SMC (Sweep + OB/FVG)
+# 3. المؤشرات (معدلة باش تعطي إشارات كثر)
 # ==========================================
-def calculate_smc_logic(df):
-    # 1. كشف السيولة (Liquidity Sweep)
-    df['Prev_Low'] = df['Low'].rolling(window=10).min().shift(1)
-    df['Prev_High'] = df['High'].rolling(window=10).max().shift(1)
+def calculate_range_filter_trend(df, rng_per=20, rng_qty=3.5):
+    source = df['Close']
+    wper = (rng_per * 2) - 1
+    avrng = source.diff().abs().ewm(span=rng_per, adjust=False).mean()
+    AC = avrng.ewm(span=wper, adjust=False).mean() * rng_qty
+    filt = np.zeros(len(source))
+    filt[0] = source.iloc[0]
+    for i in range(1, len(source)):
+        x, r, prev_filt = source.iloc[i], AC.iloc[i], filt[i-1]
+        if x - r > prev_filt: filt[i] = x - r
+        elif x + r < prev_filt: filt[i] = x + r
+        else: filt[i] = prev_filt
+    filt_series = pd.Series(filt, index=df.index)
+    fdir = np.zeros(len(source))
+    for i in range(1, len(source)):
+        if filt_series.iloc[i] > filt_series.iloc[i-1]: fdir[i] = 1
+        elif filt_series.iloc[i] < filt_series.iloc[i-1]: fdir[i] = -1
+        else: fdir[i] = fdir[i-1]
+    return fdir 
+
+def calculate_algo_alpha_zones(df, plen=100, res=40, tolerance=0.93): # صغرنا plen لـ 100 باش يعطي مناطق كثر
+    recent_df = df.tail(plen)
+    if len(recent_df) < plen: return []
+    max_p = recent_df['High'].max()
+    min_p = recent_df['Low'].min()
+    step = (max_p - min_p) / res
+    if step == 0: return []
+    bin_volumes = np.zeros(res)
+    for i in range(len(recent_df)):
+        c_low, c_high, vol = recent_df['Low'].iloc[i], recent_df['High'].iloc[i], recent_df['Volume'].iloc[i]
+        for j in range(res):
+            b_bot = min_p + (j * step)
+            b_top = min_p + ((j + 1) * step)
+            if c_high >= b_bot and c_low <= b_top: bin_volumes[j] += vol
+    key_zones = []
+    for j in range(res):
+        is_key = True
+        if j > 0 and bin_volumes[j] >= bin_volumes[j-1] * tolerance: is_key = False
+        if j < res - 1 and bin_volumes[j] >= bin_volumes[j+1] * tolerance: is_key = False
+        if is_key and bin_volumes[j] > 0:
+            key_zones.append((min_p + (j * step), min_p + ((j + 1) * step)))
+    return key_zones
+
+def calculate_sonarlab_obs(df, sens=20): # صغرنا sens لـ 20 باش يعطي OB كثر
+    df = df.copy()
+    sens = sens / 100
+    df['pc'] = (df['Open'] - df['Open'].shift(4)) / df['Open'].shift(4) * 100
+    in_bull_ob = [False] * len(df)
+    in_bear_ob = [False] * len(df)
+    active_bull_obs = []
+    active_bear_obs = []
     
-    df['Sweep_Low'] = (df['Low'] < df['Prev_Low']) & (df['Close'] > df['Prev_Low'])
-    df['Sweep_High'] = (df['High'] > df['Prev_High']) & (df['Close'] < df['Prev_High'])
-    
-    # 2. كشف الفجوات (FVG) والـ Order Block (OB)
-    df['FVG_Bull'] = df['Low'] > df['High'].shift(2)
-    df['FVG_Bear'] = df['High'] < df['Low'].shift(2)
-    
-    df['OB_Bull'] = (df['Close'].shift(1) < df['Open'].shift(1)) & (df['Close'] > df['Open']) & (df['Close'] > df['High'].shift(1))
-    df['OB_Bear'] = (df['Close'].shift(1) > df['Open'].shift(1)) & (df['Close'] < df['Open']) & (df['Close'] < df['Low'].shift(1))
-    
+    for i in range(15, len(df)):
+        if df['pc'].iloc[i-1] < -sens and df['pc'].iloc[i] >= -sens:
+            for j in range(4, 16):
+                if df['Close'].iloc[i-j] > df['Open'].iloc[i-j]:
+                    active_bear_obs.append({'top': df['High'].iloc[i-j], 'bottom': df['Low'].iloc[i-j]})
+                    break
+        if df['pc'].iloc[i-1] > sens and df['pc'].iloc[i] <= sens:
+            for j in range(4, 16):
+                if df['Close'].iloc[i-j] < df['Open'].iloc[i-j]:
+                    active_bull_obs.append({'top': df['High'].iloc[i-j], 'bottom': df['Low'].iloc[i-j]})
+                    break
+        active_bear_obs = [ob for ob in active_bear_obs if df['Close'].iloc[i] <= ob['top']]
+        active_bull_obs = [ob for ob in active_bull_obs if df['Close'].iloc[i] >= ob['bottom']]
+        
+        c_low, c_high = df['Low'].iloc[i], df['High'].iloc[i]
+        for ob in active_bull_obs:
+            if c_low <= ob['top'] and c_high >= ob['bottom']: in_bull_ob[i] = True; break
+        for ob in active_bear_obs:
+            if c_high >= ob['bottom'] and c_low <= ob['top']: in_bear_ob[i] = True; break
+                
+    df['In_Bull_OB'] = in_bull_ob
+    df['In_Bear_OB'] = in_bear_ob
     return df
 
 # ==========================================
 # 4. الواجهة الرئيسية
 # ==========================================
 if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=True):
-    with st.spinner('جاري القنص (Max 3/Day)...'):
+    with st.spinner('جاري البحث عن إشارات (High Frequency)...'):
         try:
+            df_1h = get_data(symbol, "60d", "1h")
+            trend_1h_series = calculate_range_filter_trend(df_1h)
+            current_trend_1h = trend_1h_series[-1]
+            
             df = get_data(symbol, "60d", timeframe)
-            df = calculate_smc_logic(df)
+            df = calculate_sonarlab_obs(df)
             
             st.markdown("---")
-            st.subheader(f"📊 نتائج الاختبار (Max 3 Trades/Day) - ({timeframe})")
+            st.subheader(f"📊 نتائج الاختبار - ({timeframe}) - {trade_type_mode}")
             
             wins, losses, total_trades = 0, 0, 0
             net_pips = 0
             in_trade = False
             trade_type = None
             
+            bt_zones = calculate_algo_alpha_zones(df)
+            ema200 = df['Close'].rolling(200).mean()
+            
             current_date = None
             trades_today = 0
             
-            for i in range(20, len(df) - 20):
+            for i in range(200, len(df) - 20):
                 row = df.iloc[i]
                 row_date = row.name.date()
                 
@@ -99,13 +168,18 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
                     current_date = row_date
                     trades_today = 0
                 
+                trend_bt = 1 if row['Close'] > ema200.iloc[i] else -1
                 time_ok = is_in_session(row.name, sessions)
                 
-                if not in_trade and time_ok and trades_today < 3:
-                    # شرط الشراء: ضربة سيولة لتحت + (OB أو FVG)
-                    b_cond = row['Sweep_Low'] and (row['OB_Bull'] or row['FVG_Bull'])
-                    # شرط البيع: ضربة سيولة لفوق + (OB أو FVG)
-                    s_cond = row['Sweep_High'] and (row['OB_Bear'] or row['FVG_Bear'])
+                if not in_trade and time_ok and trades_today < 5: # رفعنا السقف لـ 5 صفقات
+                    in_z = False
+                    if bt_zones:
+                        for z_b, z_t in bt_zones:
+                            if z_b <= row['Close'] <= z_t: in_z = True; break
+                    
+                    # شروط مبسطة: ترند + (منطقة ولا OB) بلا سيولة
+                    b_cond = (trend_bt == 1) and (in_z or row['In_Bull_OB'])
+                    s_cond = (trend_bt == -1) and (in_z or row['In_Bear_OB'])
                     
                     if b_cond:
                         in_trade = True; trade_type = "BUY"
@@ -155,8 +229,16 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
             entry_price = float(last['Close'])
             in_time = is_in_session(last.name, sessions)
             
-            live_buy = last['Sweep_Low'] and (last['OB_Bull'] or last['FVG_Bull']) and in_time
-            live_sell = last['Sweep_High'] and (last['OB_Bear'] or last['FVG_Bear']) and in_time
+            key_zones = calculate_algo_alpha_zones(df)
+            in_demand = False; in_supply = False
+            if key_zones:
+                for z_b, z_t in key_zones:
+                    if z_b <= entry_price <= z_t:
+                        if entry_price > ema200.iloc[-1]: in_demand = True
+                        else: in_supply = True
+                        
+            live_buy = (current_trend_1h == 1) and (in_demand or last['In_Bull_OB']) and in_time
+            live_sell = (current_trend_1h == -1) and (in_supply or last['In_Bear_OB']) and in_time
 
             if live_buy or live_sell:
                 signal, color = ("BUY", "#00FF00") if live_buy else ("SELL", "#FF0000")
@@ -169,7 +251,7 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
                 c2.metric("الستوب", f"{sl:.2f}")
                 c3.metric("الهدف", f"{tp1:.2f}")
             else:
-                st.warning(f"⚠️ السوق غير واضح حالياً. (الوقت مناسب؟ {in_time})")
+                st.warning(f"⚠️ السوق غير واضح حالياً. جرب تبدل الفريم ولا الجلسة.")
 
         except Exception as e:
             st.error(f"وقع خطأ: {e}")
