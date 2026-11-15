@@ -5,7 +5,7 @@ import numpy as np
 from datetime import datetime, timezone, timedelta
 
 st.set_page_config(page_title="Confluence Dashboard", page_icon="🎯", layout="wide")
-st.title("🎯 VIP Confluence Dashboard (SMC/ICT)")
+st.title("🎯 VIP Confluence Dashboard (24/5 SMC)")
 st.markdown("---")
 
 # ==========================================
@@ -13,10 +13,6 @@ st.markdown("---")
 # ==========================================
 symbol = st.sidebar.text_input("رمز العملة", "GC=F")
 timeframe = st.sidebar.selectbox("فريم الدخول", ["15m", "5m", "1h"], index=0)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("⏰ الجلسات (Killzones)")
-sessions = st.sidebar.multiselect("اختار الجلسات:", ["London", "New York"], default=["London", "New York"])
 
 st.sidebar.markdown("---")
 pip_size = st.sidebar.number_input("حجم النقطة", value=0.1, step=0.1, format="%.1f")
@@ -36,14 +32,6 @@ def get_data(symbol, period, interval):
     else:
         data.index = data.index.tz_convert('UTC')
     return data.dropna()
-
-def is_in_session(timestamp, selected_sessions):
-    hour = timestamp.hour
-    in_london = (7 <= hour < 16)
-    in_ny = (12 <= hour < 21)
-    if "London" in selected_sessions and in_london: return True
-    if "New York" in selected_sessions and in_ny: return True
-    return False
 
 # ==========================================
 # 3. المؤشرات (SMC)
@@ -87,15 +75,12 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
             tz_ma = timezone(timedelta(hours=1))
             current_time = datetime.now(tz_ma).strftime("%Y-%m-%d %H:%M:%S")
             
-            in_time = is_in_session(last_time, sessions)
-            
-            # الشروط
-            buy_cond = last['Sweep_Low'] and (last['OB_Bull'] or last['FVG_Bull']) and in_time and (last['RSI'] > 45)
-            sell_cond = last['Sweep_High'] and (last['OB_Bear'] or last['FVG_Bear']) and in_time and (last['RSI'] < 55)
+            # الشروط (بلا فلتر الوقت)
+            buy_cond = last['Sweep_Low'] and (last['OB_Bull'] or last['FVG_Bull']) and (last['RSI'] > 45)
+            sell_cond = last['Sweep_High'] and (last['OB_Bear'] or last['FVG_Bear']) and (last['RSI'] < 55)
 
             st.markdown("---")
             st.markdown(f"### ⏰ وقت التحليل (بتوقيت المغرب): `{current_time}`")
-            st.markdown(f"### 📊 الجلسة الحالية: {'نشطة ✅' if in_time else 'ميتة ❌ (خارج أوقات لندن ونيويورك)'}")
             st.markdown("---")
 
             if buy_cond or sell_cond:
@@ -104,14 +89,14 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
                 tp1 = entry_price + (tp1_pips * pip_size) if buy_cond else entry_price - (tp1_pips * pip_size)
                 
                 st.markdown(f"<h1 style='text-align: center; color: {color}; font-size: 60px;'>{signal}</h1>", unsafe_allow_html=True)
-                st.success("✅ تم التأكيد: ضربة سيولة (Sweep) + منطقة (OB/FVG) + توقيت مناسب.")
+                st.success("✅ تم التأكيد: ضربة سيولة (Sweep) + منطقة (OB/FVG).")
                 
                 c1, c2, c3 = st.columns(3)
                 c1.metric("سعر الدخول (Entry)", f"{entry_price:.2f}")
                 c2.metric("الستوب (SL)", f"{sl:.2f}")
                 c3.metric("الهدف (TP)", f"{tp1:.2f}")
             else:
-                st.warning("⚠️ لا توجد إشارة حالياً. البوت ينتظر ضربة سيولة (Sweep) مع تأكيد من OB/FVG خلال جلسة لندن أو نيويورك.")
+                st.warning("⚠️ لا توجد إشارة حالياً. البوت ينتظر ضربة سيولة (Sweep) مع تأكيد من OB/FVG.")
                 
                 # عرض تفاصيل إضافية باش تعرف علاش ماعطاش إشارة
                 st.info(f"📝 تحليل سريع: RSI = {last['RSI']:.1f} | Sweep Low = {last['Sweep_Low']} | Sweep High = {last['Sweep_High']}")
