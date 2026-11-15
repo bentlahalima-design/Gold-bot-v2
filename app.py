@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 st.set_page_config(page_title="AI Signal Pro - BTC & Gold", page_icon="🎯", layout="wide")
 
 # ==========================================
-# 1. CSS باش نعطيو شكل التطبيق اللي فالصورة
+# 1. CSS باش نعطيو شكل التطبيق
 # ==========================================
 st.markdown("""
 <style>
@@ -51,7 +51,6 @@ st.markdown("---")
 # ==========================================
 # 2. الإعدادات
 # ==========================================
-# قائمة اختيار العملة
 asset_choice = st.sidebar.selectbox("اختار الأصل (Asset)", ["BTC-USD (بيتكوين)", "GC=F (ذهب)"], index=0)
 
 if "BTC" in asset_choice:
@@ -94,7 +93,6 @@ def get_data(symbol, period, interval):
     return data.dropna()
 
 def analyze_market(df):
-    # 1. الحسابات الأساسية
     df['EMA50'] = ta.trend.ema_indicator(df['Close'], window=50)
     df['EMA200'] = ta.trend.ema_indicator(df['Close'], window=200)
     df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
@@ -102,12 +100,10 @@ def analyze_market(df):
     
     last = df.iloc[-1]
     
-    # 2. الترند والزخم
     trend = "Strong Uptrend" if last['Close'] > last['EMA200'] and last['EMA50'] > last['EMA200'] else "Strong Downtrend"
     momentum = "Bullish" if last['RSI'] > 50 else "Bearish"
     volatility = "High" if last['ATR'] > df['ATR'].mean() else "Low"
     
-    # 3. منطق SMC (Sweep + OB/FVG)
     df['Sweep_Low'] = (df['Low'] < df['Low'].rolling(10).min().shift(1)) & (df['Close'] > df['Low'].rolling(10).min().shift(1))
     df['Sweep_High'] = (df['High'] > df['High'].rolling(10).max().shift(1)) & (df['Close'] < df['High'].rolling(10).max().shift(1))
     df['FVG_Bull'] = df['Low'] > df['High'].shift(2)
@@ -115,7 +111,6 @@ def analyze_market(df):
     
     last = df.iloc[-1]
     
-    # 4. تحديد الإشارة
     if last['Sweep_Low'] and (last['FVG_Bull'] or momentum == "Bullish"):
         signal = "BUY"
         confidence = 85
@@ -140,10 +135,8 @@ if st.button(f"🚀 تحليل {asset_choice} الآن", use_container_width=Tru
             df = get_data(symbol, "60d", timeframe)
             signal, confidence, trend, momentum, volatility, entry, rsi = analyze_market(df)
             
-            # تحديد الألوان
             sig_color = "buy-color" if signal == "BUY" else "sell-color"
             
-            # حساب الستوب والأهداف
             if signal == "BUY":
                 sl = entry - (sl_pips * pip_size)
                 tp1, tp2, tp3 = entry + (tp1_pips * pip_size), entry + (tp2_pips * pip_size), entry + (tp3_pips * pip_size)
@@ -151,67 +144,62 @@ if st.button(f"🚀 تحليل {asset_choice} الآن", use_container_width=Tru
                 sl = entry + (sl_pips * pip_size)
                 tp1, tp2, tp3 = entry - (tp1_pips * pip_size), entry - (tp2_pips * pip_size), entry - (tp3_pips * pip_size)
 
-            # الوقت الحالي
             tz_ma = timezone(timedelta(hours=1))
             current_time = datetime.now(tz_ma).strftime("%H:%M")
 
             # ==========================================
-            # عرض الكارت (HTML)
+            # عرض الكارت (بدون مسافات باش يخدم HTML)
             # ==========================================
-            st.markdown(f"""
-            <div class="signal-card">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span class="title-text">🎯 AI Signal - {asset_choice}</span>
-                    <span style="color: #2ecc71; font-size: 14px;">● LIVE</span>
-                </div>
-                
-                <div class="big-signal {sig_color}">
-                    {signal}
-                </div>
-                
-                <div style="background-color: #2d303e; border-radius: 10px; height: 10px; margin-bottom: 20px;">
-                    <div style="background-color: {'#00ff88' if signal == 'BUY' else '#ff3366'}; width: {confidence}%; height: 10px; border-radius: 10px;"></div>
-                </div>
-                <div style="text-align: right; color: { '#00ff88' if signal == 'BUY' else '#ff3366' }; font-weight: bold; margin-bottom: 20px;">
-                    {confidence}% Confidence
-                </div>
-                
-                <div class="box-item entry-box">
-                    <span>🎯 Entry</span>
-                    <span class="text-gold">${entry:.2f}</span>
-                </div>
-                <div class="box-item sl-box">
-                    <span>🔴 Stop Loss</span>
-                    <span class="text-red">${sl:.2f}</span>
-                </div>
-                <div class="box-item tp-box">
-                    <span>✅ TP1</span>
-                    <span class="text-green">${tp1:.2f}</span>
-                </div>
-                <div class="box-item tp-box">
-                    <span>✅ TP2</span>
-                    <span class="text-green">${tp2:.2f}</span>
-                </div>
-                <div class="box-item tp-box">
-                    <span>✅ TP3</span>
-                    <span class="text-green">${tp3:.2f}</span>
-                </div>
-                
-                <div style="display: flex; justify-content: space-between; margin-top: 20px; color: #a0a5b1; font-size: 14px;">
-                    <div>Trend: <span style="color: {'#00ff88' if 'Up' in trend else '#ff3366'};">{trend}</span></div>
-                    <div>Volatility: <span style="color: white;">{volatility}</span></div>
-                </div>
-                <div style="display: flex; justify-content: space-between; margin-top: 10px; color: #a0a5b1; font-size: 14px;">
-                    <div>Momentum: <span style="color: white;">{momentum}</span></div>
-                    <div>RSI: <span style="color: white;">{rsi:.1f}</span></div>
-                </div>
-                
-                <div style="margin-top: 20px; text-align: center; color: #555; font-size: 12px;">
-                    Last signal: {signal} at {current_time} (under 1 min ago)<br>
-                    Mode: Quality (target 5/day)
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            html_content = f"""
+<div class="signal-card">
+<div style="display: flex; justify-content: space-between; align-items: center;">
+<span class="title-text">🎯 AI Signal - {asset_choice}</span>
+<span style="color: #2ecc71; font-size: 14px;">● LIVE</span>
+</div>
+<div class="big-signal {sig_color}">
+{signal}
+</div>
+<div style="background-color: #2d303e; border-radius: 10px; height: 10px; margin-bottom: 20px;">
+<div style="background-color: {'#00ff88' if signal == 'BUY' else '#ff3366'}; width: {confidence}%; height: 10px; border-radius: 10px;"></div>
+</div>
+<div style="text-align: right; color: { '#00ff88' if signal == 'BUY' else '#ff3366' }; font-weight: bold; margin-bottom: 20px;">
+{confidence}% Confidence
+</div>
+<div class="box-item entry-box">
+<span>🎯 Entry</span>
+<span class="text-gold">${entry:.2f}</span>
+</div>
+<div class="box-item sl-box">
+<span>🔴 Stop Loss</span>
+<span class="text-red">${sl:.2f}</span>
+</div>
+<div class="box-item tp-box">
+<span>✅ TP1</span>
+<span class="text-green">${tp1:.2f}</span>
+</div>
+<div class="box-item tp-box">
+<span>✅ TP2</span>
+<span class="text-green">${tp2:.2f}</span>
+</div>
+<div class="box-item tp-box">
+<span>✅ TP3</span>
+<span class="text-green">${tp3:.2f}</span>
+</div>
+<div style="display: flex; justify-content: space-between; margin-top: 20px; color: #a0a5b1; font-size: 14px;">
+<div>Trend: <span style="color: {'#00ff88' if 'Up' in trend else '#ff3366'};">{trend}</span></div>
+<div>Volatility: <span style="color: white;">{volatility}</span></div>
+</div>
+<div style="display: flex; justify-content: space-between; margin-top: 10px; color: #a0a5b1; font-size: 14px;">
+<div>Momentum: <span style="color: white;">{momentum}</span></div>
+<div>RSI: <span style="color: white;">{rsi:.1f}</span></div>
+</div>
+<div style="margin-top: 20px; text-align: center; color: #555; font-size: 12px;">
+Last signal: {signal} at {current_time} (under 1 min ago)<br>
+Mode: Quality (target 5/day)
+</div>
+</div>
+"""
+            st.markdown(html_content, unsafe_allow_html=True)
 
         except Exception as e:
             st.error(f"وقع خطأ: {e}")
