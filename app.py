@@ -4,8 +4,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timezone, timedelta
 
-st.set_page_config(page_title="V14 - ICT Sweep Sniper", page_icon="🎯", layout="wide")
-st.title("🎯 V14 - ICT Sweep Sniper (Strict 3 Trades/Day)")
+st.set_page_config(page_title="V15 - Strict ICT Sniper", page_icon="🛡️", layout="wide")
+st.title("🛡️ V15 - Strict ICT Sniper (High Win Rate)")
 st.markdown("---")
 
 # ==========================================
@@ -16,11 +16,7 @@ timeframe = st.sidebar.selectbox("فريم الدخول", ["15m", "5m"], index=0
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("⏰ الجلسات (Killzones)")
-sessions = st.sidebar.multiselect(
-    "اختار الجلسات:",
-    ["Asia/Tokyo", "London", "New York"],
-    default=["London", "New York"]
-)
+sessions = st.sidebar.multiselect("اختار الجلسات:", ["London", "New York"], default=["London", "New York"])
 
 st.sidebar.markdown("---")
 pip_size = st.sidebar.number_input("حجم النقطة", value=0.1, step=0.1, format="%.1f")
@@ -43,29 +39,35 @@ def get_data(symbol, period, interval):
 
 def is_in_session(timestamp, selected_sessions):
     hour = timestamp.hour
-    in_asia = (0 <= hour < 9)
     in_london = (7 <= hour < 16)
     in_ny = (12 <= hour < 21)
-    if "Asia/Tokyo" in selected_sessions and in_asia: return True
     if "London" in selected_sessions and in_london: return True
     if "New York" in selected_sessions and in_ny: return True
     return False
 
 # ==========================================
-# 3. منطق SMC (Sweep + OB/FVG)
+# 3. المؤشرات (Trend, RSI, Sweep, OB/FVG)
 # ==========================================
-def calculate_smc_logic(df):
-    # 1. كشف السيولة (Liquidity Sweep) - السعر كيكسر قاع ولا قمة 10 شموع وراء
+def calculate_indicators(df):
+    # 1. الترند (EMA 200)
+    df['EMA200'] = df['Close'].rolling(window=200).mean()
+    
+    # 2. RSI
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
+
+    # 3. السيولة (Liquidity Sweep)
     df['Prev_Low'] = df['Low'].rolling(window=10).min().shift(1)
     df['Prev_High'] = df['High'].rolling(window=10).max().shift(1)
-    
     df['Sweep_Low'] = (df['Low'] < df['Prev_Low']) & (df['Close'] > df['Prev_Low'])
     df['Sweep_High'] = (df['High'] > df['Prev_High']) & (df['Close'] < df['Prev_High'])
     
-    # 2. كشف الفجوات (FVG) والـ Order Block (OB)
+    # 4. FVG و OB
     df['FVG_Bull'] = df['Low'] > df['High'].shift(2)
     df['FVG_Bear'] = df['High'] < df['Low'].shift(2)
-    
     df['OB_Bull'] = (df['Close'].shift(1) < df['Open'].shift(1)) & (df['Close'] > df['Open']) & (df['Close'] > df['High'].shift(1))
     df['OB_Bear'] = (df['Close'].shift(1) > df['Open'].shift(1)) & (df['Close'] < df['Open']) & (df['Close'] < df['Low'].shift(1))
     
@@ -75,13 +77,13 @@ def calculate_smc_logic(df):
 # 4. الواجهة الرئيسية
 # ==========================================
 if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=True):
-    with st.spinner('جاري القنص (Max 3/Day)...'):
+    with st.spinner('جاري الفلترة الصارمة...'):
         try:
             df = get_data(symbol, "60d", timeframe)
-            df = calculate_smc_logic(df)
+            df = calculate_indicators(df)
             
             st.markdown("---")
-            st.subheader(f"📊 نتائج الاختبار (Max 3 Trades/Day) - ({timeframe})")
+            st.subheader(f"📊 نتائج الاختبار الصارم (V15) - ({timeframe})")
             
             wins, losses, total_trades = 0, 0, 0
             net_pips = 0
@@ -91,7 +93,7 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
             current_date = None
             trades_today = 0
             
-            for i in range(20, len(df) - 20):
+            for i in range(200, len(df) - 20):
                 row = df.iloc[i]
                 row_date = row.name.date()
                 
@@ -102,31 +104,48 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
                 time_ok = is_in_session(row.name, sessions)
                 
                 if not in_trade and time_ok and trades_today < 3:
-                    # شرط الشراء: ضربة سيولة لتحت + (OB أو FVG)
-                    b_cond = row['Sweep_Low'] and (row['OB_Bull'] or row['FVG_Bull'])
-                    # شرط البيع: ضربة سيولة لفوق + (OB أو FVG)
-                    s_cond = row['Sweep_High'] and (row['OB_Bear'] or row['FVG_Bear'])
+                    # شروط قاسية جداً (Sweep + OB/FVG + Trend + RSI)
+                    b_cond = (
+                        row['Sweep_Low'] and (row['OB_Bull'] or row['FVG_Bull']) and 
+                        (row['Close'] > row['EMA200']) and (row['RSI'] > 50)
+                    )
+                    s_cond = (
+                        row['Sweep_High'] and (row['OB_Bear'] or row['FVG_Bear']) and 
+                        (row['Close'] < row['EMA200']) and (row['RSI'] < 50)
+                    )
                     
                     if b_cond:
                         in_trade = True; trade_type = "BUY"
                         trades_today += 1
-                        entry = row['Close']; sl_price = entry - (sl_pips * pip_size); tp_price = entry + (tp1_pips * pip_size)
+                        entry = row['Close']; current_sl = entry - (sl_pips * pip_size); tp_price = entry + (tp1_pips * pip_size)
                     elif s_cond:
                         in_trade = True; trade_type = "SELL"
                         trades_today += 1
-                        entry = row['Close']; sl_price = entry + (sl_pips * pip_size); tp_price = entry - (tp1_pips * pip_size)
+                        entry = row['Close']; current_sl = entry + (sl_pips * pip_size); tp_price = entry - (tp1_pips * pip_size)
                 
                 elif in_trade:
                     trade_closed = False
                     if trade_type == "BUY":
-                        if row['Low'] <= sl_price: 
-                            losses += 1; net_pips -= sl_pips; trade_closed = True
-                        elif row['High'] >= tp_price: 
+                        # Breakeven: إلا وصل 50 بيب ربح، حرك الستوب للدخول
+                        if row['High'] >= entry + (50 * pip_size) and current_sl < entry:
+                            current_sl = entry
+                            
+                        if row['Low'] <= current_sl:
+                            if current_sl >= entry: wins += 1; net_pips += 0 # Breakeven
+                            else: losses += 1; net_pips -= sl_pips
+                            trade_closed = True
+                        elif row['High'] >= tp_price:
                             wins += 1; net_pips += tp1_pips; trade_closed = True
+                            
                     elif trade_type == "SELL":
-                        if row['High'] >= sl_price: 
-                            losses += 1; net_pips -= sl_pips; trade_closed = True
-                        elif row['Low'] <= tp_price: 
+                        if row['Low'] <= entry - (50 * pip_size) and current_sl > entry:
+                            current_sl = entry
+                            
+                        if row['High'] >= current_sl:
+                            if current_sl <= entry: wins += 1; net_pips += 0
+                            else: losses += 1; net_pips -= sl_pips
+                            trade_closed = True
+                        elif row['Low'] <= tp_price:
                             wins += 1; net_pips += tp1_pips; trade_closed = True
                     
                     if trade_closed:
@@ -137,8 +156,8 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
                 wr = (wins / total_trades * 100)
                 col_a, col_b, col_c, col_d = st.columns(4)
                 col_a.metric("إجمالي الصفقات", total_trades)
-                col_b.metric("ناجحة", wins)
-                col_c.metric("خاسرة", losses)
+                col_b.metric("ناجحة (TP/BE)", wins)
+                col_c.metric("خاسرة (SL)", losses)
                 col_d.metric("نسبة النجاح", f"{wr:.1f}%")
                 
                 if net_pips > 0:
@@ -146,7 +165,7 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
                 else:
                     st.error(f"📉 **صافي الخسارة (Net Loss): {net_pips} نقطة**")
             else:
-                st.error("ماكاينش صفقات كافية.")
+                st.error("ماكاينش صفقات كافية. (البوت ولى قناص بزاف).")
 
             # عرض الإشارة الحالية
             st.markdown("---")
@@ -155,8 +174,8 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
             entry_price = float(last['Close'])
             in_time = is_in_session(last.name, sessions)
             
-            live_buy = last['Sweep_Low'] and (last['OB_Bull'] or last['FVG_Bull']) and in_time
-            live_sell = last['Sweep_High'] and (last['OB_Bear'] or last['FVG_Bear']) and in_time
+            live_buy = last['Sweep_Low'] and (last['OB_Bull'] or last['FVG_Bull']) and (last['Close'] > last['EMA200']) and (last['RSI'] > 50) and in_time
+            live_sell = last['Sweep_High'] and (last['OB_Bear'] or last['FVG_Bear']) and (last['Close'] < last['EMA200']) and (last['RSI'] < 50) and in_time
 
             if live_buy or live_sell:
                 signal, color = ("BUY", "#00FF00") if live_buy else ("SELL", "#FF0000")
@@ -169,7 +188,7 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
                 c2.metric("الستوب", f"{sl:.2f}")
                 c3.metric("الهدف", f"{tp1:.2f}")
             else:
-                st.warning(f"⚠️ السوق غير واضح حالياً. (الوقت مناسب؟ {in_time})")
+                st.warning(f"⚠️ السوق غير واضح حالياً. البوت ينتظر فرصة ذهبية (Sweep + OB + Trend + RSI).")
 
         except Exception as e:
             st.error(f"وقع خطأ: {e}")
