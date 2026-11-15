@@ -5,7 +5,7 @@ import numpy as np
 import ta
 from datetime import datetime, timezone, timedelta
 
-st.set_page_config(page_title="AI Signal Pro", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="AI Signal Pro - BTC & Gold", page_icon="🎯", layout="wide")
 
 # ==========================================
 # 1. CSS باش نعطيو شكل التطبيق اللي فالصورة
@@ -51,16 +51,33 @@ st.markdown("---")
 # ==========================================
 # 2. الإعدادات
 # ==========================================
-symbol = "GC=F" # الذهب
+# قائمة اختيار العملة
+asset_choice = st.sidebar.selectbox("اختار الأصل (Asset)", ["BTC-USD (بيتكوين)", "GC=F (ذهب)"], index=0)
+
+if "BTC" in asset_choice:
+    symbol = "BTC-USD"
+    default_pip = 1.0
+    default_sl = 500
+    default_tp1 = 500
+    default_tp2 = 1000
+    default_tp3 = 1500
+else:
+    symbol = "GC=F"
+    default_pip = 0.1
+    default_sl = 100
+    default_tp1 = 50
+    default_tp2 = 100
+    default_tp3 = 150
+
 timeframe = st.sidebar.selectbox("الفريم الزمني", ["15m", "1h", "5m"], index=0)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🎯 إدارة المخاطر (بالنقط)")
-pip_size = st.sidebar.number_input("حجم النقطة", value=0.1, step=0.1, format="%.1f")
-sl_pips = st.sidebar.number_input("الستوب لوز", value=100, step=10)
-tp1_pips = st.sidebar.number_input("الهدف 1", value=50, step=10)
-tp2_pips = st.sidebar.number_input("الهدف 2", value=100, step=10)
-tp3_pips = st.sidebar.number_input("الهدف 3", value=150, step=10)
+pip_size = st.sidebar.number_input("حجم النقطة", value=default_pip, step=0.1, format="%.1f")
+sl_pips = st.sidebar.number_input("الستوب لوز", value=default_sl, step=10)
+tp1_pips = st.sidebar.number_input("الهدف 1", value=default_tp1, step=10)
+tp2_pips = st.sidebar.number_input("الهدف 2", value=default_tp2, step=10)
+tp3_pips = st.sidebar.number_input("الهدف 3", value=default_tp3, step=10)
 
 # ==========================================
 # 3. جلب الداتا
@@ -77,13 +94,13 @@ def get_data(symbol, period, interval):
     return data.dropna()
 
 def analyze_market(df):
-    last = df.iloc[-1]
-    
     # 1. الحسابات الأساسية
     df['EMA50'] = ta.trend.ema_indicator(df['Close'], window=50)
     df['EMA200'] = ta.trend.ema_indicator(df['Close'], window=200)
     df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
     df['ATR'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
+    
+    last = df.iloc[-1]
     
     # 2. الترند والزخم
     trend = "Strong Uptrend" if last['Close'] > last['EMA200'] and last['EMA50'] > last['EMA200'] else "Strong Downtrend"
@@ -96,14 +113,16 @@ def analyze_market(df):
     df['FVG_Bull'] = df['Low'] > df['High'].shift(2)
     df['FVG_Bear'] = df['High'] < df['Low'].shift(2)
     
-    # 4. تحديد الإشارة (مع ضمان إعطاء إشارة دايما)
+    last = df.iloc[-1]
+    
+    # 4. تحديد الإشارة
     if last['Sweep_Low'] and (last['FVG_Bull'] or momentum == "Bullish"):
         signal = "BUY"
         confidence = 85
     elif last['Sweep_High'] and (last['FVG_Bear'] or momentum == "Bearish"):
         signal = "SELL"
         confidence = 85
-    elif last['Close'] > last['EMA200']: # إشارة احتياطية باش ما يبقاش بلا إشارة
+    elif last['Close'] > last['EMA200']:
         signal = "BUY"
         confidence = 65
     else:
@@ -115,8 +134,8 @@ def analyze_market(df):
 # ==========================================
 # 4. الواجهة الرئيسية
 # ==========================================
-if st.button("🚀 تحليل السوق الآن", use_container_width=True):
-    with st.spinner('جاري تحليل السوق...'):
+if st.button(f"🚀 تحليل {asset_choice} الآن", use_container_width=True):
+    with st.spinner(f'جاري تحليل {asset_choice}...'):
         try:
             df = get_data(symbol, "60d", timeframe)
             signal, confidence, trend, momentum, volatility, entry, rsi = analyze_market(df)
@@ -142,7 +161,7 @@ if st.button("🚀 تحليل السوق الآن", use_container_width=True):
             st.markdown(f"""
             <div class="signal-card">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span class="title-text">🎯 AI Signal</span>
+                    <span class="title-text">🎯 AI Signal - {asset_choice}</span>
                     <span style="color: #2ecc71; font-size: 14px;">● LIVE</span>
                 </div>
                 
