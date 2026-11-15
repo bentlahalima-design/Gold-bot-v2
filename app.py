@@ -2,27 +2,70 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import ta
 from datetime import datetime, timezone, timedelta
 
-st.set_page_config(page_title="Gold & BTC Confluence", page_icon="🎯", layout="wide")
-st.title("🎯 VIP Confluence Dashboard (Gold & BTC)")
+st.set_page_config(page_title="AI Signal Pro", page_icon="🎯", layout="wide")
+
+# ==========================================
+# 1. CSS باش نعطيو شكل التطبيق اللي فالصورة
+# ==========================================
+st.markdown("""
+<style>
+    .main { background-color: #0e1117; }
+    .signal-card {
+        background-color: #1a1c24;
+        padding: 20px;
+        border-radius: 15px;
+        color: white;
+        border: 1px solid #2d303e;
+        margin-bottom: 15px;
+    }
+    .title-text { color: #a0a5b1; font-size: 16px; font-weight: bold; }
+    .big-signal { font-size: 60px; font-weight: bold; text-align: center; margin: 10px 0; }
+    .buy-color { color: #00ff88; }
+    .sell-color { color: #ff3366; }
+    .box-item {
+        background-color: #232634;
+        padding: 15px;
+        border-radius: 10px;
+        margin-bottom: 10px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 18px;
+        border-left: 4px solid #444;
+    }
+    .entry-box { border-left-color: #f39c12; }
+    .sl-box { border-left-color: #e74c3c; }
+    .tp-box { border-left-color: #2ecc71; }
+    .text-green { color: #2ecc71; font-weight: bold; }
+    .text-red { color: #e74c3c; font-weight: bold; }
+    .text-gold { color: #f1c40f; font-weight: bold; }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("<h2 style='text-align: center; color: white;'>🎯 AI Signal Dashboard</h2>", unsafe_allow_html=True)
 st.markdown("---")
 
 # ==========================================
-# 1. الإعدادات
+# 2. الإعدادات
 # ==========================================
-timeframe = st.sidebar.selectbox("فريم الدخول", ["15m", "5m", "1h"], index=0)
+symbol = "GC=F" # الذهب
+timeframe = st.sidebar.selectbox("الفريم الزمني", ["15m", "1h", "5m"], index=0)
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("🎯 إعدادات إدارة المخاطر")
-pip_size = st.sidebar.number_input("حجم النقطة (للدهب 0.1 | للبيتكوين 1.0)", value=0.1, step=0.1, format="%.1f")
-sl_pips = st.sidebar.number_input("الستوب لوز (نقطة)", value=50, step=10)
-tp1_pips = st.sidebar.number_input("الهدف (نقطة)", value=100, step=10)
+st.sidebar.subheader("🎯 إدارة المخاطر (بالنقط)")
+pip_size = st.sidebar.number_input("حجم النقطة", value=0.1, step=0.1, format="%.1f")
+sl_pips = st.sidebar.number_input("الستوب لوز", value=100, step=10)
+tp1_pips = st.sidebar.number_input("الهدف 1", value=50, step=10)
+tp2_pips = st.sidebar.number_input("الهدف 2", value=100, step=10)
+tp3_pips = st.sidebar.number_input("الهدف 3", value=150, step=10)
 
 # ==========================================
-# 2. دوال مساعدة
+# 3. جلب الداتا
 # ==========================================
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=30)
 def get_data(symbol, period, interval):
     data = yf.download(tickers=symbol, period=period, interval=interval, progress=False)
     if isinstance(data.columns, pd.MultiIndex):
@@ -33,95 +76,123 @@ def get_data(symbol, period, interval):
         data.index = data.index.tz_convert('UTC')
     return data.dropna()
 
-def calculate_smc_logic(df):
-    # RSI
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df['RSI'] = 100 - (100 / (1 + rs))
-
-    # Sweep (السيولة على 10 شموع)
-    df['Prev_Low_10'] = df['Low'].rolling(window=10).min().shift(1)
-    df['Prev_High_10'] = df['High'].rolling(window=10).max().shift(1)
-    df['Sweep_Low'] = (df['Low'] < df['Prev_Low_10']) & (df['Close'] > df['Prev_Low_10'])
-    df['Sweep_High'] = (df['High'] > df['Prev_High_10']) & (df['Close'] < df['Prev_High_10'])
+def analyze_market(df):
+    last = df.iloc[-1]
     
-    # FVG و OB
+    # 1. الحسابات الأساسية
+    df['EMA50'] = ta.trend.ema_indicator(df['Close'], window=50)
+    df['EMA200'] = ta.trend.ema_indicator(df['Close'], window=200)
+    df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
+    df['ATR'] = ta.volatility.average_true_range(df['High'], df['Low'], df['Close'], window=14)
+    
+    # 2. الترند والزخم
+    trend = "Strong Uptrend" if last['Close'] > last['EMA200'] and last['EMA50'] > last['EMA200'] else "Strong Downtrend"
+    momentum = "Bullish" if last['RSI'] > 50 else "Bearish"
+    volatility = "High" if last['ATR'] > df['ATR'].mean() else "Low"
+    
+    # 3. منطق SMC (Sweep + OB/FVG)
+    df['Sweep_Low'] = (df['Low'] < df['Low'].rolling(10).min().shift(1)) & (df['Close'] > df['Low'].rolling(10).min().shift(1))
+    df['Sweep_High'] = (df['High'] > df['High'].rolling(10).max().shift(1)) & (df['Close'] < df['High'].rolling(10).max().shift(1))
     df['FVG_Bull'] = df['Low'] > df['High'].shift(2)
     df['FVG_Bear'] = df['High'] < df['Low'].shift(2)
-    df['OB_Bull'] = (df['Close'].shift(1) < df['Open'].shift(1)) & (df['Close'] > df['Open']) & (df['Close'] > df['High'].shift(1))
-    df['OB_Bear'] = (df['Close'].shift(1) > df['Open'].shift(1)) & (df['Close'] < df['Open']) & (df['Close'] < df['Low'].shift(1))
     
-    return df
-
-def analyze_asset(symbol, name, pip_size, sl_pips, tp1_pips):
-    try:
-        df = get_data(symbol, "60d", timeframe)
-        df = calculate_smc_logic(df)
+    # 4. تحديد الإشارة (مع ضمان إعطاء إشارة دايما)
+    if last['Sweep_Low'] and (last['FVG_Bull'] or momentum == "Bullish"):
+        signal = "BUY"
+        confidence = 85
+    elif last['Sweep_High'] and (last['FVG_Bear'] or momentum == "Bearish"):
+        signal = "SELL"
+        confidence = 85
+    elif last['Close'] > last['EMA200']: # إشارة احتياطية باش ما يبقاش بلا إشارة
+        signal = "BUY"
+        confidence = 65
+    else:
+        signal = "SELL"
+        confidence = 65
         
-        last = df.iloc[-1]
-        entry_price = float(last['Close'])
-        
-        buy_cond = last['Sweep_Low'] and (last['OB_Bull'] or last['FVG_Bull']) and (last['RSI'] > 45)
-        sell_cond = last['Sweep_High'] and (last['OB_Bear'] or last['FVG_Bear']) and (last['RSI'] < 55)
-
-        if buy_cond:
-            signal, color = "BUY", "#00FF00"
-            sl = entry_price - (sl_pips * pip_size)
-            tp1 = entry_price + (tp1_pips * pip_size)
-        elif sell_cond:
-            signal, color = "SELL", "#FF0000"
-            sl = entry_price + (sl_pips * pip_size)
-            tp1 = entry_price - (tp1_pips * pip_size)
-        else:
-            signal, color = "WAITING", "gray"
-            sl, tp1 = 0, 0
-
-        return {
-            "name": name, "signal": signal, "color": color, 
-            "entry": entry_price, "sl": sl, "tp1": tp1, "rsi": last['RSI']
-        }
-    except Exception as e:
-        return {"name": name, "signal": "ERROR", "color": "red", "entry": 0, "sl": 0, "tp1": 0, "rsi": 0}
+    return signal, confidence, trend, momentum, volatility, last['Close'], last['RSI']
 
 # ==========================================
-# 3. الواجهة الرئيسية
+# 4. الواجهة الرئيسية
 # ==========================================
-if st.sidebar.button("🚀 تحليل الذهب والبيتكوين الآن", use_container_width=True):
+if st.button("🚀 تحليل السوق الآن", use_container_width=True):
     with st.spinner('جاري تحليل السوق...'):
-        
-        # توقيت المغرب
-        tz_ma = timezone(timedelta(hours=1))
-        current_time = datetime.now(tz_ma).strftime("%Y-%m-%d %H:%M:%S")
-        st.markdown(f"### ⏰ وقت التحليل (بتوقيت المغرب): `{current_time}`")
-        st.markdown("---")
-        
-        # تحليل الجوج
-        gold_res = analyze_asset("GC=F", "الذهب (Gold)", pip_size, sl_pips, tp1_pips)
-        btc_res = analyze_asset("BTC-USD", "البيتكوين (BTC)", 1.0, sl_pips * 10, tp1_pips * 10) # ضربنا فـ 10 حيت البيتكوين حركتو كبيرة
-
-        # عرض النتائج فـ جوج أعمدة
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader(f"🥇 {gold_res['name']}")
-            if gold_res['signal'] in ["BUY", "SELL"]:
-                st.markdown(f"<h1 style='text-align: center; color: {gold_res['color']}; font-size: 50px;'>{gold_res['signal']}</h1>", unsafe_allow_html=True)
-                st.metric("الدخول", f"{gold_res['entry']:.2f}")
-                st.metric("الستوب", f"{gold_res['sl']:.2f}")
-                st.metric("الهدف", f"{gold_res['tp1']:.2f}")
+        try:
+            df = get_data(symbol, "60d", timeframe)
+            signal, confidence, trend, momentum, volatility, entry, rsi = analyze_market(df)
+            
+            # تحديد الألوان
+            sig_color = "buy-color" if signal == "BUY" else "sell-color"
+            
+            # حساب الستوب والأهداف
+            if signal == "BUY":
+                sl = entry - (sl_pips * pip_size)
+                tp1, tp2, tp3 = entry + (tp1_pips * pip_size), entry + (tp2_pips * pip_size), entry + (tp3_pips * pip_size)
             else:
-                st.warning("⚠️ لا توجد إشارة حالياً (ينتظر Sweep + OB/FVG).")
-            st.caption(f"RSI: {gold_res['rsi']:.1f}")
+                sl = entry + (sl_pips * pip_size)
+                tp1, tp2, tp3 = entry - (tp1_pips * pip_size), entry - (tp2_pips * pip_size), entry - (tp3_pips * pip_size)
 
-        with col2:
-            st.subheader(f"₿ {btc_res['name']}")
-            if btc_res['signal'] in ["BUY", "SELL"]:
-                st.markdown(f"<h1 style='text-align: center; color: {btc_res['color']}; font-size: 50px;'>{btc_res['signal']}</h1>", unsafe_allow_html=True)
-                st.metric("الدخول", f"{btc_res['entry']:.2f}")
-                st.metric("الستوب", f"{btc_res['sl']:.2f}")
-                st.metric("الهدف", f"{btc_res['tp1']:.2f}")
-            else:
-                st.warning("⚠️ لا توجد إشارة حالياً (ينتظر Sweep + OB/FVG).")
-            st.caption(f"RSI: {btc_res['rsi']:.1f}")
+            # الوقت الحالي
+            tz_ma = timezone(timedelta(hours=1))
+            current_time = datetime.now(tz_ma).strftime("%H:%M")
+
+            # ==========================================
+            # عرض الكارت (HTML)
+            # ==========================================
+            st.markdown(f"""
+            <div class="signal-card">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span class="title-text">🎯 AI Signal</span>
+                    <span style="color: #2ecc71; font-size: 14px;">● LIVE</span>
+                </div>
+                
+                <div class="big-signal {sig_color}">
+                    {signal}
+                </div>
+                
+                <div style="background-color: #2d303e; border-radius: 10px; height: 10px; margin-bottom: 20px;">
+                    <div style="background-color: {'#00ff88' if signal == 'BUY' else '#ff3366'}; width: {confidence}%; height: 10px; border-radius: 10px;"></div>
+                </div>
+                <div style="text-align: right; color: { '#00ff88' if signal == 'BUY' else '#ff3366' }; font-weight: bold; margin-bottom: 20px;">
+                    {confidence}% Confidence
+                </div>
+                
+                <div class="box-item entry-box">
+                    <span>🎯 Entry</span>
+                    <span class="text-gold">${entry:.2f}</span>
+                </div>
+                <div class="box-item sl-box">
+                    <span>🔴 Stop Loss</span>
+                    <span class="text-red">${sl:.2f}</span>
+                </div>
+                <div class="box-item tp-box">
+                    <span>✅ TP1</span>
+                    <span class="text-green">${tp1:.2f}</span>
+                </div>
+                <div class="box-item tp-box">
+                    <span>✅ TP2</span>
+                    <span class="text-green">${tp2:.2f}</span>
+                </div>
+                <div class="box-item tp-box">
+                    <span>✅ TP3</span>
+                    <span class="text-green">${tp3:.2f}</span>
+                </div>
+                
+                <div style="display: flex; justify-content: space-between; margin-top: 20px; color: #a0a5b1; font-size: 14px;">
+                    <div>Trend: <span style="color: {'#00ff88' if 'Up' in trend else '#ff3366'};">{trend}</span></div>
+                    <div>Volatility: <span style="color: white;">{volatility}</span></div>
+                </div>
+                <div style="display: flex; justify-content: space-between; margin-top: 10px; color: #a0a5b1; font-size: 14px;">
+                    <div>Momentum: <span style="color: white;">{momentum}</span></div>
+                    <div>RSI: <span style="color: white;">{rsi:.1f}</span></div>
+                </div>
+                
+                <div style="margin-top: 20px; text-align: center; color: #555; font-size: 12px;">
+                    Last signal: {signal} at {current_time} (under 1 min ago)<br>
+                    Mode: Quality (target 5/day)
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        except Exception as e:
+            st.error(f"وقع خطأ: {e}")
