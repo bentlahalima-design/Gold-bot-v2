@@ -4,8 +4,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timezone, timedelta
 
-st.set_page_config(page_title="V12 - 3 Trades Sniper", page_icon="🎯", layout="wide")
-st.title("🎯 V12 - 3 Trades/Day Sniper (Strict 100 Pips)")
+st.set_page_config(page_title="V13 - 3 Trades Sniper", page_icon="🎯", layout="wide")
+st.title("🎯 V13 - Sniper (Confirmed Entries)")
 st.markdown("---")
 
 # ==========================================
@@ -24,8 +24,8 @@ sessions = st.sidebar.multiselect(
 
 st.sidebar.markdown("---")
 pip_size = st.sidebar.number_input("حجم النقطة", value=0.1, step=0.1, format="%.1f")
-sl_pips = st.sidebar.number_input("الستوب لوز (نقطة)", value=60, step=10)
-tp1_pips = st.sidebar.number_input("الهدف (نقطة)", value=100, step=10)
+sl_pips = st.sidebar.number_input("الستوب لوز (نقطة)", value=100, step=10)
+tp1_pips = st.sidebar.number_input("الهدف (نقطة)", value=150, step=10)
 
 # ==========================================
 # 2. جلب الداتا
@@ -41,21 +41,27 @@ def get_data(symbol, period, interval):
         data.index = data.index.tz_convert('UTC')
     return data.dropna()
 
-# دالة فلترة الجلسات
 def is_in_session(timestamp, selected_sessions):
     hour = timestamp.hour
     in_asia = (0 <= hour < 9)
     in_london = (7 <= hour < 16)
     in_ny = (12 <= hour < 21)
-    
     if "Asia/Tokyo" in selected_sessions and in_asia: return True
     if "London" in selected_sessions and in_london: return True
     if "New York" in selected_sessions and in_ny: return True
     return False
 
 # ==========================================
-# 3. المؤشرات (Range Filter, AlgoAlpha, Sonarlab)
+# 3. المؤشرات
 # ==========================================
+def calculate_rsi(df, window=14):
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
+    return df
+
 def calculate_range_filter_trend(df, rng_per=20, rng_qty=3.5):
     source = df['Close']
     wper = (rng_per * 2) - 1
@@ -107,7 +113,6 @@ def calculate_sonarlab_obs(df, sens=28):
     in_bear_ob = [False] * len(df)
     active_bull_obs = []
     active_bear_obs = []
-    
     for i in range(15, len(df)):
         if df['pc'].iloc[i-1] < -sens and df['pc'].iloc[i] >= -sens:
             for j in range(4, 16):
@@ -121,33 +126,29 @@ def calculate_sonarlab_obs(df, sens=28):
                     break
         active_bear_obs = [ob for ob in active_bear_obs if df['Close'].iloc[i] <= ob['top']]
         active_bull_obs = [ob for ob in active_bull_obs if df['Close'].iloc[i] >= ob['bottom']]
-        
         c_low, c_high = df['Low'].iloc[i], df['High'].iloc[i]
         for ob in active_bull_obs:
             if c_low <= ob['top'] and c_high >= ob['bottom']: in_bull_ob[i] = True; break
         for ob in active_bear_obs:
             if c_high >= ob['bottom'] and c_low <= ob['top']: in_bear_ob[i] = True; break
-                
     df['In_Bull_OB'] = in_bull_ob
     df['In_Bear_OB'] = in_bear_ob
     return df
 
 # ==========================================
-# 4. الباك تست والقناص (Max 3 Trades / Day)
+# 4. الواجهة الرئيسية
 # ==========================================
 if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=True):
-    with st.spinner('جاري القنص (Max 3 Trades/Day)...'):
+    with st.spinner('جاري القنص...'):
         try:
             df_1h = get_data(symbol, "60d", "1h")
             trend_1h_series = calculate_range_filter_trend(df_1h)
             current_trend_1h = trend_1h_series[-1]
             
             df = get_data(symbol, "60d", timeframe)
+            df = calculate_rsi(df)
             df = calculate_sonarlab_obs(df)
             
-            # ---------------------------------------------------
-            # 1. منطق الباك تست (مع حد أقصى 3 صفقات فاليوم)
-            # ---------------------------------------------------
             st.markdown("---")
             st.subheader(f"📊 نتائج الاختبار (Max 3 Trades/Day) - ({timeframe})")
             
@@ -166,7 +167,6 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
                 row = df.iloc[i]
                 row_date = row.name.date()
                 
-                # تصفير عداد الصفقات مع بداية كل نهار جديد
                 if row_date != current_date:
                     current_date = row_date
                     trades_today = 0
@@ -180,12 +180,21 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
                         for z_b, z_t in bt_zones:
                             if z_b <= row['Close'] <= z_t: in_z = True; break
                     
-                    b_cond = (trend_bt == 1) and (in_z or row['In_Bull_OB'])
-                    s_cond = (trend_bt == -1) and (in_z or row['In_Bear_OB'])
+                    # شرط الشمعة القوية
+                    bullish_candle = row['Close'] > row['Open']
+                    bearish_candle = row['Close'] < row['Open']
+                    
+                    # شرط RSI
+                    rsi_ok_buy = row['RSI'] > 40
+                    rsi_ok_sell = row['RSI'] < 60
+
+                    # الشروط النهائية (منطقة + شمعة + RSI + ترند)
+                    b_cond = (trend_bt == 1) and (in_z or row['In_Bull_OB']) and bullish_candle and rsi_ok_buy
+                    s_cond = (trend_bt == -1) and (in_z or row['In_Bear_OB']) and bearish_candle and rsi_ok_sell
                     
                     if b_cond:
                         in_trade = True; trade_type = "BUY"
-                        trades_today += 1 # كنزيدو صفقة لليوم
+                        trades_today += 1
                         entry = row['Close']; sl_price = entry - (sl_pips * pip_size); tp_price = entry + (tp1_pips * pip_size)
                     elif s_cond:
                         in_trade = True; trade_type = "SELL"
@@ -224,46 +233,36 @@ if st.sidebar.button("🚀 تحليل السوق الآن", use_container_width=
             else:
                 st.error("ماكاينش صفقات كافية.")
 
-            # ---------------------------------------------------
-            # 2. عرض الإشارة الحالية (Live Signal)
-            # ---------------------------------------------------
+            # عرض الإشارة الحالية
             st.markdown("---")
             st.subheader("🔴 الإشارة الحالية (Live)")
-            
             last = df.iloc[-1]
             entry_price = float(last['Close'])
-            last_time = last.name
-            tz_ma = timezone(timedelta(hours=1))
-            current_time = datetime.now(tz_ma).strftime("%Y-%m-%d %H:%M:%S")
-            
-            in_time = is_in_session(last_time, sessions)
+            in_time = is_in_session(last.name, sessions)
             
             key_zones = calculate_algo_alpha_zones(df)
-            in_demand = False
-            in_supply = False
+            in_demand = False; in_supply = False
             if key_zones:
                 for z_b, z_t in key_zones:
                     if z_b <= entry_price <= z_t:
                         if entry_price > ema200.iloc[-1]: in_demand = True
                         else: in_supply = True
                         
-            buy_cond = (current_trend_1h == 1) and (in_demand or last['In_Bull_OB']) and in_time
-            sell_cond = (current_trend_1h == -1) and (in_supply or last['In_Bear_OB']) and in_time
+            live_buy = (current_trend_1h == 1) and (in_demand or last['In_Bull_OB']) and (last['Close'] > last['Open']) and (last['RSI'] > 40) and in_time
+            live_sell = (current_trend_1h == -1) and (in_supply or last['In_Bear_OB']) and (last['Close'] < last['Open']) and (last['RSI'] < 60) and in_time
 
-            if buy_cond or sell_cond:
-                signal, color = ("BUY", "#00FF00") if buy_cond else ("SELL", "#FF0000")
-                sl = entry_price - (sl_pips * pip_size) if buy_cond else entry_price + (sl_pips * pip_size)
-                tp1 = entry_price + (tp1_pips * pip_size) if buy_cond else entry_price - (tp1_pips * pip_size)
+            if live_buy or live_sell:
+                signal, color = ("BUY", "#00FF00") if live_buy else ("SELL", "#FF0000")
+                sl = entry_price - (sl_pips * pip_size) if live_buy else entry_price + (sl_pips * pip_size)
+                tp1 = entry_price + (tp1_pips * pip_size) if live_buy else entry_price - (tp1_pips * pip_size)
                 
                 st.markdown(f"<h1 style='text-align: center; color: {color}; font-size: 60px;'>{signal}</h1>", unsafe_allow_html=True)
-                st.markdown(f"<h4 style='text-align: center; color: #FFD700;'>⏰ وقت التحليل: {current_time}</h4>", unsafe_allow_html=True)
-                
                 c1, c2, c3 = st.columns(3)
                 c1.metric("سعر الدخول", f"{entry_price:.2f}")
-                c2.metric(f"الستوب ({sl_pips}ن)", f"{sl:.2f}")
-                c3.metric(f"الهدف ({tp1_pips}ن)", f"{tp1:.2f}")
+                c2.metric("الستوب", f"{sl:.2f}")
+                c3.metric("الهدف", f"{tp1:.2f}")
             else:
-                st.warning(f"⚠️ السوق غير واضح حالياً. (الوقت مناسب؟ {in_time}) - كينتظر توافق ترند 1H مع مناطق العرض/الطلب.")
+                st.warning(f"⚠️ السوق غير واضح حالياً. (الوقت مناسب؟ {in_time})")
 
         except Exception as e:
             st.error(f"وقع خطأ: {e}")
