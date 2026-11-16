@@ -5,7 +5,7 @@ import numpy as np
 import ta
 from datetime import datetime, timezone, timedelta
 
-st.set_page_config(page_title="MTF Sniper V24", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="MTF Sniper V23", page_icon="🎯", layout="wide")
 
 # ==========================================
 # 1. CSS
@@ -40,7 +40,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("<h2 style='text-align: center; color: white;'>🎯 MTF Sniper V24 (Dynamic Score)</h2>", unsafe_allow_html=True)
+st.markdown("<h2 style='text-align: center; color: white;'>🎯 MTF Sniper V23 (Live Price)</h2>", unsafe_allow_html=True)
 st.markdown("---")
 
 # ==========================================
@@ -67,7 +67,7 @@ tp1_pips = st.sidebar.number_input("الهدف", value=default_tp1, step=10)
 # ==========================================
 # 3. جلب الداتا
 # ==========================================
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=10) # قللنا الوقت لـ 10 ثواني باش يجيب داتا طازجة
 def get_data(symbol, period, interval):
     data = yf.download(tickers=symbol, period=period, interval=interval, progress=False)
     if isinstance(data.columns, pd.MultiIndex):
@@ -84,64 +84,48 @@ def get_data(symbol, period, interval):
 if st.button(f"🚀 تحليل {asset_choice} الآن", use_container_width=True):
     with st.spinner(f'جاري تحليل الفريمات...'):
         try:
+            # جلب الداتا
             df_15m = get_data(symbol, "30d", "15m")
             df_5m = get_data(symbol, "10d", "5m")
-            df_1m = get_data(symbol, "1d", "1m")
+            df_1m = get_data(symbol, "1d", "1m") # جلبنا فريم الدقيقة باش نجيبو السعر اللحظي
             
+            # الترند ديال 15m
             df_15m['EMA200'] = ta.trend.ema_indicator(df_15m['Close'], window=200)
             last_15m = df_15m.iloc[-1]
             
-            df_5m['RSI'] = ta.momentum.rsi(df_5m['Close'], window=14)
-            df_5m['Sweep_Low'] = (df_5m['Low'] < df_5m['Low'].rolling(10).min().shift(1)) & (df_5m['Close'] > df_5m['Low'].rolling(10).min().shift(1))
-            df_5m['Sweep_High'] = (df_5m['High'] > df_5m['High'].rolling(10).max().shift(1)) & (df_5m['Close'] < df_5m['High'].rolling(10).max().shift(1))
-            df_5m['FVG_Bull'] = df_5m['Low'] > df_5m['High'].shift(2)
-            df_5m['FVG_Bear'] = df_5m['High'] < df_5m['Low'].shift(2)
-            
-            last_5m = df_5m.iloc[-1]
-            live_entry = df_1m['Close'].iloc[-1]
-
-            # --- نظام النقط (Scoring System) ---
-            signal = "WAITING"
-            confidence = 0
-            sig_color = "wait-color"
-            
-            # تحديد الاتجاه
             if last_15m['Close'] > last_15m['EMA200']:
                 trend_15m = "UP"
                 trend_text = "Strong Uptrend (15m)"
                 trend_color = "#00ff88"
-                
-                # شروط الشراء (كنزيدو النقط)
-                score = 40 # نقطة الأساس حيت ترند صاعد
-                if last_5m['Close'] > last_5m['Open']: score += 10 # شمعة خضراء
-                if last_5m['RSI'] > 50: score += 15 # زخم إيجابي
-                if last_5m['Sweep_Low']: score += 20 # ضربة سيولة
-                if last_5m['FVG_Bull']: score += 15 # فجوة سعرية
-                
-                if score >= 50:
-                    signal = "BUY"
-                    confidence = score
-                    sig_color = "buy-color"
-
             else:
                 trend_15m = "DOWN"
                 trend_text = "Strong Downtrend (15m)"
                 trend_color = "#ff3366"
-                
-                # شروط البيع (كنزيدو النقط)
-                score = 40 # نقطة الأساس حيت ترند هابط
-                if last_5m['Close'] < last_5m['Open']: score += 10 # شمعة حمراء
-                if last_5m['RSI'] < 50: score += 15 # زخم سلبي
-                if last_5m['Sweep_High']: score += 20 # ضربة سيولة
-                if last_5m['FVG_Bear']: score += 15 # فجوة سعرية
-                
-                if score >= 50:
-                    signal = "SELL"
-                    confidence = score
-                    sig_color = "sell-color"
 
-            # تأكد بلي النسبة ما تفوتش 100%
-            if confidence > 100: confidence = 100
+            # المؤشرات فـ 5m
+            df_5m['RSI'] = ta.momentum.rsi(df_5m['Close'], window=14)
+            df_5m['Sweep_Low'] = (df_5m['Low'] < df_5m['Low'].rolling(10).min().shift(1)) & (df_5m['Close'] > df_5m['Low'].rolling(10).min().shift(1))
+            df_5m['Sweep_High'] = (df_5m['High'] > df_5m['High'].rolling(10).max().shift(1)) & (df_5m['Close'] < df_5m['High'].rolling(10).max().shift(1))
+            last_5m = df_5m.iloc[-1]
+
+            # --- السعر اللحظي (أقرب ما يمكن) ---
+            live_entry = df_1m['Close'].iloc[-1] # السعر من فريم الدقيقة
+
+            signal = "WAITING"
+            confidence = 0
+            sig_color = "wait-color"
+            
+            if trend_15m == "UP":
+                if last_5m['Sweep_Low'] and (last_5m['RSI'] > 45):
+                    signal = "BUY"; confidence = 90; sig_color = "buy-color"
+                elif last_5m['Close'] > last_5m['Open']:
+                    signal = "BUY"; confidence = 65; sig_color = "buy-color"
+                    
+            elif trend_15m == "DOWN":
+                if last_5m['Sweep_High'] and (last_5m['RSI'] < 55):
+                    signal = "SELL"; confidence = 90; sig_color = "sell-color"
+                elif last_5m['Close'] < last_5m['Open']:
+                    signal = "SELL"; confidence = 65; sig_color = "sell-color"
 
             tz_ma = timezone(timedelta(hours=1))
             current_time = datetime.now(tz_ma).strftime("%H:%M")
@@ -174,14 +158,14 @@ if st.button(f"🚀 تحليل {asset_choice} الآن", use_container_width=Tru
                     tp1 = live_entry - (tp1_pips * pip_size)
                     
                 html_content += f"""
-<div class="box-item entry-box"><span>🎯 السعر الحالي</span><span class="text-gold">${live_entry:.2f}</span></div>
+<div class="box-item entry-box"><span>🎯 السعر الحالي (Entry)</span><span class="text-gold">${live_entry:.2f}</span></div>
 <div class="box-item sl-box"><span>🔴 Stop Loss</span><span class="text-red">${sl:.2f}</span></div>
 <div class="box-item tp-box"><span>✅ TP1</span><span class="text-green">${tp1:.2f}</span></div>
 """
             else:
                 html_content += f"""
 <div style="text-align: center; color: #a0a5b1; margin: 30px 0;">
-<p>⏳ البوت كينتظر توافق الشروط.</p>
+<p>⏳ البوت كينتظر توافق الفريمات.</p>
 <p>الترند العام حالياً: <b style="color: {trend_color};">{trend_text}</b></p>
 </div>
 """
@@ -191,7 +175,10 @@ if st.button(f"🚀 تحليل {asset_choice} الآن", use_container_width=Tru
 <div>15M Trend: <span style="color: {trend_color};">{trend_text}</span></div>
 <div>RSI (5m): <span style="color: white;">{last_5m['RSI']:.1f}</span></div>
 </div>
-<div style="margin-top: 20px; text-align: center; color: #555; font-size: 12px;">
+<div style="margin-top: 20px; text-align: center; color: #e74c3c; font-size: 12px;">
+⚠️ تنبيه: السعر المعروض تقريبي (Delayed). راجع السعر الحي فـ MT5 قبل الدخول!
+</div>
+<div style="margin-top: 10px; text-align: center; color: #555; font-size: 12px;">
 Last signal: {signal} at {current_time}
 </div>
 </div>
